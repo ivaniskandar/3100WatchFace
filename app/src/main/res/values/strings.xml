@@ -1,5 +1,6 @@
 <resources>
-    <string name="app_name">3100 Analog Watch Face</string>
+    <string name="app_name">3100 Watch Face</string>
     <string name="message">Watch face tapped</string>
     <string name="my_analog_name">My Analog</string>
+    <string name="my_digital_name">My Digital</string>
 </resources>

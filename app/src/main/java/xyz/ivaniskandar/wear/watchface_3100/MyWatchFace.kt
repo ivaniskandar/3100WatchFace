@@ -1,4 +1,4 @@
-package xyz.ivaniskandar.wear.analog3100
+package xyz.ivaniskandar.wear.watchface_3100
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -25,25 +25,6 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Updates rate in milliseconds for interactive mode. We update once a second to advance the
- * second hand.
- */
-private const val INTERACTIVE_UPDATE_RATE_MS = 1000
-
-/**
- * Handler message id for updating the time periodically in interactive mode.
- */
-private const val MSG_UPDATE_TIME = 0
-
-private const val HOUR_STROKE_WIDTH = 5f
-private const val MINUTE_STROKE_WIDTH = 3f
-private const val SECOND_TICK_STROKE_WIDTH = 2f
-
-private const val CENTER_GAP_AND_CIRCLE_RADIUS = 4f
-
-private const val SHADOW_RADIUS = 6f
-
-/**
  * Analog watch face with a ticking second hand. In ambient mode, the second hand isn't
  * shown. On devices with low-bit ambient mode, the hands are drawn without anti-aliasing in ambient
  * mode. The watch face is drawn with less contrast in mute mode.
@@ -57,6 +38,27 @@ private const val SHADOW_RADIUS = 6f
  * https://codelabs.developers.google.com/codelabs/watchface/index.html#0
  */
 class MyWatchFace : DecompositionWatchFaceService() {
+    companion object {
+        /**
+         * Updates rate in milliseconds for interactive mode. We update once a second to advance the
+         * second hand.
+         */
+        private const val INTERACTIVE_UPDATE_RATE_MS = 1000
+
+        /**
+         * Handler message id for updating the time periodically in interactive mode.
+         */
+        private const val MSG_UPDATE_TIME = 0
+
+        private const val HOUR_STROKE_WIDTH = 5f
+        private const val MINUTE_STROKE_WIDTH = 3f
+        private const val SECOND_TICK_STROKE_WIDTH = 2f
+
+        private const val CENTER_GAP_AND_CIRCLE_RADIUS = 4f
+
+        private const val SHADOW_RADIUS = 6f
+    }
+
     private lateinit var mCalendar: Calendar
 
     private val displayMetrics by lazy {
