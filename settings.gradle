@@ -1,2 +1,2 @@
 include ':app'
-rootProject.name='3100 Analog Watch Face'
+rootProject.name='3100 Watch Face'
