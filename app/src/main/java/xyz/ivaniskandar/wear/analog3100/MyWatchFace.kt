@@ -10,11 +10,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Message
 import androidx.palette.graphics.Palette
-import android.support.wearable.watchface.CanvasWatchFaceService
 import android.support.wearable.watchface.WatchFaceService
 import android.support.wearable.watchface.WatchFaceStyle
 import android.support.wearable.watchface.decomposition.ImageComponent
 import android.support.wearable.watchface.decomposition.WatchFaceDecomposition
+import android.support.wearable.watchface.decompositionface.DecompositionWatchFaceService
 import android.view.SurfaceHolder
 import android.widget.Toast
 
@@ -56,10 +56,338 @@ private const val SHADOW_RADIUS = 6f
  * in the Google Watch Face Code Lab:
  * https://codelabs.developers.google.com/codelabs/watchface/index.html#0
  */
-class MyWatchFace : CanvasWatchFaceService() {
+class MyWatchFace : DecompositionWatchFaceService() {
+    private lateinit var mCalendar: Calendar
+
+    private val displayMetrics by lazy {
+        application.resources.displayMetrics
+    }
+
+    private var mRegisteredTimeZoneReceiver = false
+    private var mMuteMode: Boolean = false
+    private var mWidth: Int = 0
+    private var mHeight: Int = 0
+    private var mCenterX: Float = 0F
+    private var mCenterY: Float = 0F
+
+    private var mSecondHandLength: Float = 0F
+    private var sMinuteHandLength: Float = 0F
+    private var sHourHandLength: Float = 0F
+
+    /* Colors for all hands (hour, minute, seconds, ticks) based on photo loaded. */
+    private var mWatchHandColor: Int = 0
+    private var mWatchHandHighlightColor: Int = 0
+    private var mWatchHandShadowColor: Int = 0
+
+    private lateinit var mHourPaint: Paint
+    private lateinit var mMinutePaint: Paint
+    private lateinit var mSecondPaint: Paint
+    private lateinit var mTickAndCirclePaint: Paint
+
+    private lateinit var mBackgroundPaint: Paint
+    private lateinit var mBackgroundBitmap: Bitmap
+    private lateinit var mGrayBackgroundBitmap: Bitmap
+
+    private var mAmbient: Boolean = false
+    private var mLowBitAmbient: Boolean = false
+    private var mBurnInProtection: Boolean = false
+
+    override fun buildDecomposition(): WatchFaceDecomposition {
+        val ambientOffset = applicationContext.resources.getDimensionPixelOffset(R.dimen.decomposed_ambient_offset)
+        val ambientWidth = displayMetrics.widthPixels - ambientOffset
+        val ambientHeight = displayMetrics.heightPixels - ambientOffset
+        val ambientCenterX = ambientWidth / 2f
+        val ambientCenterY = ambientHeight / 2f
+
+        // Background
+        val bgBitmap = Bitmap.createBitmap(ambientWidth, ambientHeight, Bitmap.Config.ARGB_8888)
+        Canvas(bgBitmap).apply {
+            drawColor(Color.BLACK)
+
+            val innerTickRadius = ambientCenterX - 10
+            val paint = Paint(mTickAndCirclePaint).apply {
+                isAntiAlias = false
+                clearShadowLayer()
+            }
+            for (tickIndex in 0..11) {
+                val tickRot = (tickIndex.toDouble() * Math.PI * 2.0 / 12).toFloat()
+                val innerX = sin(tickRot.toDouble()).toFloat() * innerTickRadius
+                val innerY = (-cos(tickRot.toDouble())).toFloat() * innerTickRadius
+                val outerX = sin(tickRot.toDouble()).toFloat() * ambientCenterX
+                val outerY = (-cos(tickRot.toDouble())).toFloat() * ambientCenterX
+                drawLine(
+                        ambientCenterX + innerX, ambientCenterY + innerY,
+                        ambientCenterX + outerX, ambientCenterY + outerY, paint
+                )
+            }
+        }
+        val bgIcon = Icon.createWithBitmap(bgBitmap)
+        val bgComponent = ImageComponent.Builder()
+                .setComponentId(0)
+                .setZOrder(0)
+                .setImage(bgIcon)
+                .build()
+
+        // Hour hand
+        val hourHeight = (CENTER_GAP_AND_CIRCLE_RADIUS + sHourHandLength).toInt()
+        val hourBitmap = Bitmap
+                .createBitmap(CENTER_GAP_AND_CIRCLE_RADIUS.toInt(), hourHeight, Bitmap.Config.ARGB_8888)
+        Canvas(hourBitmap).apply {
+            val paint = Paint(mHourPaint).apply {
+                isAntiAlias = false
+                clearShadowLayer()
+            }
+            drawLine(
+                    width / 2f,
+                    0f,
+                    width / 2f,
+                    height.toFloat(),
+                    paint
+            )
+        }
+        var xOffset = (hourBitmap.width / 2f) / ambientWidth
+        var yOffset = hourBitmap.height.toFloat() / ambientHeight
+        var offset = RectF(
+                0.5f - xOffset,
+                0.5f - yOffset,
+                0.5f + xOffset,
+                0.5f + yOffset
+        )
+        val hourComponent = ImageComponent.Builder(ImageComponent.Builder.HOUR_HAND)
+                .setComponentId(1)
+                .setZOrder(1)
+                .setImage(Icon.createWithBitmap(hourBitmap))
+                .setBounds(offset)
+                .build()
+
+        // Minute hand
+        val minuteHeight = (CENTER_GAP_AND_CIRCLE_RADIUS + sMinuteHandLength).toInt()
+        val minuteBitmap = Bitmap
+                .createBitmap(CENTER_GAP_AND_CIRCLE_RADIUS.toInt(), minuteHeight, Bitmap.Config.ARGB_8888)
+        Canvas(minuteBitmap).apply {
+            val paint = Paint(mMinutePaint).apply {
+                isAntiAlias = false
+                clearShadowLayer()
+            }
+            drawLine(
+                    width / 2f,
+                    0f,
+                    width / 2f,
+                    height.toFloat(),
+                    paint
+            )
+        }
+        xOffset = (minuteBitmap.width / 2f) / ambientWidth
+        yOffset = minuteBitmap.height.toFloat() / ambientHeight
+        offset = RectF(
+                0.5f - xOffset,
+                0.5f - yOffset,
+                0.5f + xOffset,
+                0.5f + yOffset
+        )
+        val minuteComponent = ImageComponent.Builder(ImageComponent.Builder.MINUTE_HAND)
+                .setComponentId(2)
+                .setZOrder(2)
+                .setImage(Icon.createWithBitmap(minuteBitmap))
+                .setBounds(offset)
+                .build()
+
+        // Second hand
+        val secondHeight = (CENTER_GAP_AND_CIRCLE_RADIUS + mSecondHandLength).toInt()
+        val secondBitmap = Bitmap
+                .createBitmap(CENTER_GAP_AND_CIRCLE_RADIUS.toInt(), secondHeight, Bitmap.Config.ARGB_8888)
+        Canvas(secondBitmap).apply {
+            val paint = Paint(mSecondPaint).apply {
+                isAntiAlias = false
+                clearShadowLayer()
+            }
+            drawLine(
+                    width / 2f,
+                    0f,
+                    width / 2f,
+                    height.toFloat(),
+                    paint
+            )
+        }
+        xOffset = (secondBitmap.width / 2f) / ambientWidth
+        yOffset = secondBitmap.height.toFloat() / ambientHeight
+        offset = RectF(
+                0.5f - xOffset,
+                0.5f - yOffset,
+                0.5f + xOffset,
+                0.5f + yOffset
+        )
+        val secondComponent = ImageComponent.Builder(ImageComponent.Builder.TICKING_SECOND_HAND)
+                .setComponentId(3)
+                .setZOrder(3)
+                .setImage(Icon.createWithBitmap(secondBitmap))
+                .setBounds(offset)
+                .build()
+
+        // Center circle
+        val circleBitmap = Bitmap.createBitmap(
+                CENTER_GAP_AND_CIRCLE_RADIUS.toInt() * 4,
+                CENTER_GAP_AND_CIRCLE_RADIUS.toInt() * 4,
+                Bitmap.Config.ARGB_8888
+        )
+        Canvas(circleBitmap).apply {
+            val paint = Paint(mTickAndCirclePaint).apply {
+                isAntiAlias = false
+                clearShadowLayer()
+            }
+            val innerPaint = Paint(paint).apply {
+                color = Color.BLACK
+                style = Paint.Style.FILL
+            }
+            translate(width / 2f, height / 2f)
+            drawCircle(0f, 0f, CENTER_GAP_AND_CIRCLE_RADIUS, innerPaint)
+            drawCircle(0f, 0f, CENTER_GAP_AND_CIRCLE_RADIUS, paint)
+        }
+        xOffset = circleBitmap.width / (ambientWidth * 2f)
+        yOffset = circleBitmap.height / (ambientHeight * 2f)
+        offset = RectF(
+                0.5f - xOffset,
+                0.5f - yOffset,
+                0.5f + xOffset,
+                0.5f + yOffset
+        )
+        val circleComponent = ImageComponent.Builder()
+                .setComponentId(4)
+                .setZOrder(4)
+                .setImage(Icon.createWithBitmap(circleBitmap))
+                .setBounds(offset)
+                .build()
+
+        return WatchFaceDecomposition.Builder().apply {
+            addImageComponents(bgComponent, hourComponent, minuteComponent, secondComponent, circleComponent)
+        }.build()
+    }
 
     override fun onCreateEngine(): Engine {
+        mCalendar = Calendar.getInstance()
+
+        initializeWatchFace()
+        initializeBackground()
+        updateWatchHandStyle()
+
         return Engine()
+    }
+
+    private fun updateWatchHandStyle() {
+        if (mAmbient) {
+            mHourPaint.color = Color.WHITE
+            mMinutePaint.color = Color.WHITE
+            mSecondPaint.color = Color.WHITE
+            mTickAndCirclePaint.color = Color.WHITE
+
+            mHourPaint.isAntiAlias = false
+            mMinutePaint.isAntiAlias = false
+            mSecondPaint.isAntiAlias = false
+            mTickAndCirclePaint.isAntiAlias = false
+
+            mHourPaint.clearShadowLayer()
+            mMinutePaint.clearShadowLayer()
+            mSecondPaint.clearShadowLayer()
+            mTickAndCirclePaint.clearShadowLayer()
+        } else {
+            mHourPaint.color = mWatchHandColor
+            mMinutePaint.color = mWatchHandColor
+            mSecondPaint.color = mWatchHandHighlightColor
+            mTickAndCirclePaint.color = mWatchHandColor
+
+            mHourPaint.isAntiAlias = true
+            mMinutePaint.isAntiAlias = true
+            mSecondPaint.isAntiAlias = true
+            mTickAndCirclePaint.isAntiAlias = true
+
+            mHourPaint.setShadowLayer(
+                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+            mMinutePaint.setShadowLayer(
+                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+            mSecondPaint.setShadowLayer(
+                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+            mTickAndCirclePaint.setShadowLayer(
+                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+        }
+    }
+
+    private fun initializeBackground() {
+        mBackgroundPaint = Paint().apply {
+            color = Color.BLACK
+        }
+        mBackgroundBitmap = BitmapFactory.decodeResource(resources, R.drawable.bg)
+
+        /* Extracts colors from background image to improve watchface style. */
+        Palette.from(mBackgroundBitmap).generate {
+            it?.let {
+                mWatchHandHighlightColor = it.getVibrantColor(Color.RED)
+                mWatchHandColor = it.getLightVibrantColor(Color.WHITE)
+                mWatchHandShadowColor = it.getDarkMutedColor(Color.BLACK)
+            }
+        }
+    }
+
+    private fun initializeWatchFace() {
+        /* Set defaults for colors */
+        mWatchHandColor = Color.WHITE
+        mWatchHandHighlightColor = Color.RED
+        mWatchHandShadowColor = Color.BLACK
+
+        mHourPaint = Paint().apply {
+            color = mWatchHandColor
+            strokeWidth = HOUR_STROKE_WIDTH
+            isAntiAlias = true
+            strokeCap = Paint.Cap.ROUND
+            setShadowLayer(
+                SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+        }
+
+        mMinutePaint = Paint().apply {
+            color = mWatchHandColor
+            strokeWidth = MINUTE_STROKE_WIDTH
+            isAntiAlias = true
+            strokeCap = Paint.Cap.ROUND
+            setShadowLayer(
+                SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+        }
+
+        mSecondPaint = Paint().apply {
+            color = mWatchHandHighlightColor
+            strokeWidth = SECOND_TICK_STROKE_WIDTH
+            isAntiAlias = true
+            strokeCap = Paint.Cap.ROUND
+            setShadowLayer(
+                SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+        }
+
+        mTickAndCirclePaint = Paint().apply {
+            color = mWatchHandColor
+            strokeWidth = SECOND_TICK_STROKE_WIDTH
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            setShadowLayer(
+                SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
+            )
+        }
+
+        mWidth = displayMetrics.widthPixels
+        mHeight = displayMetrics.heightPixels
+        mCenterX = mWidth / 2f
+        mCenterY = mHeight / 2f
+
+        /*
+         * Calculate lengths of different hands based on watch screen size.
+         */
+        mSecondHandLength = (mCenterX * 0.875).toFloat()
+        sMinuteHandLength = (mCenterX * 0.75).toFloat()
+        sHourHandLength = (mCenterX * 0.5).toFloat()
     }
 
     private class EngineHandler(reference: Engine) : Handler() {
@@ -75,39 +403,7 @@ class MyWatchFace : CanvasWatchFaceService() {
         }
     }
 
-    inner class Engine : CanvasWatchFaceService.Engine() {
-
-        private lateinit var mCalendar: Calendar
-
-        private var mRegisteredTimeZoneReceiver = false
-        private var mMuteMode: Boolean = false
-        private var mWidth: Int = 0
-        private var mHeight: Int = 0
-        private var mCenterX: Float = 0F
-        private var mCenterY: Float = 0F
-
-        private var mSecondHandLength: Float = 0F
-        private var sMinuteHandLength: Float = 0F
-        private var sHourHandLength: Float = 0F
-
-        /* Colors for all hands (hour, minute, seconds, ticks) based on photo loaded. */
-        private var mWatchHandColor: Int = 0
-        private var mWatchHandHighlightColor: Int = 0
-        private var mWatchHandShadowColor: Int = 0
-
-        private lateinit var mHourPaint: Paint
-        private lateinit var mMinutePaint: Paint
-        private lateinit var mSecondPaint: Paint
-        private lateinit var mTickAndCirclePaint: Paint
-
-        private lateinit var mBackgroundPaint: Paint
-        private lateinit var mBackgroundBitmap: Bitmap
-        private lateinit var mGrayBackgroundBitmap: Bitmap
-
-        private var mAmbient: Boolean = false
-        private var mLowBitAmbient: Boolean = false
-        private var mBurnInProtection: Boolean = false
-
+    inner class Engine : DecompositionWatchFaceService.Engine() {
         /* Handler to update the time once a second in interactive mode. */
         private val mUpdateTimeHandler = EngineHandler(this)
 
@@ -126,244 +422,6 @@ class MyWatchFace : CanvasWatchFaceService() {
                     .setAcceptsTapEvents(true)
                     .build()
             )
-
-            mCalendar = Calendar.getInstance()
-
-            initializeBackground()
-            initializeWatchFace()
-        }
-
-        private fun initializeBackground() {
-            mBackgroundPaint = Paint().apply {
-                color = Color.BLACK
-            }
-            mBackgroundBitmap = BitmapFactory.decodeResource(resources, R.drawable.bg)
-
-            /* Extracts colors from background image to improve watchface style. */
-            Palette.from(mBackgroundBitmap).generate {
-                it?.let {
-                    mWatchHandHighlightColor = it.getVibrantColor(Color.RED)
-                    mWatchHandColor = it.getLightVibrantColor(Color.WHITE)
-                    mWatchHandShadowColor = it.getDarkMutedColor(Color.BLACK)
-                    updateWatchHandStyle()
-                }
-            }
-        }
-
-        private fun initializeWatchFace() {
-            /* Set defaults for colors */
-            mWatchHandColor = Color.WHITE
-            mWatchHandHighlightColor = Color.RED
-            mWatchHandShadowColor = Color.BLACK
-
-            mHourPaint = Paint().apply {
-                color = mWatchHandColor
-                strokeWidth = HOUR_STROKE_WIDTH
-                isAntiAlias = true
-                strokeCap = Paint.Cap.ROUND
-                setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-            }
-
-            mMinutePaint = Paint().apply {
-                color = mWatchHandColor
-                strokeWidth = MINUTE_STROKE_WIDTH
-                isAntiAlias = true
-                strokeCap = Paint.Cap.ROUND
-                setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-            }
-
-            mSecondPaint = Paint().apply {
-                color = mWatchHandHighlightColor
-                strokeWidth = SECOND_TICK_STROKE_WIDTH
-                isAntiAlias = true
-                strokeCap = Paint.Cap.ROUND
-                setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-            }
-
-            mTickAndCirclePaint = Paint().apply {
-                color = mWatchHandColor
-                strokeWidth = SECOND_TICK_STROKE_WIDTH
-                isAntiAlias = true
-                style = Paint.Style.STROKE
-                setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-            }
-        }
-
-        private fun updateDecomposition() {
-            val ambientOffset = applicationContext.resources.getDimensionPixelOffset(R.dimen.decomposed_ambient_offset)
-            val ambientWidth = mWidth - ambientOffset
-            val ambientHeight = mHeight - ambientOffset
-            val ambientCenterX = ambientWidth / 2f
-            val ambientCenterY = ambientHeight / 2f
-
-            // Background
-            val bgBitmap = Bitmap.createBitmap(ambientWidth, ambientHeight, Bitmap.Config.ARGB_8888)
-            Canvas(bgBitmap).apply {
-                drawColor(Color.BLACK)
-
-                val innerTickRadius = ambientCenterX - 10
-                val paint = Paint(mTickAndCirclePaint).apply {
-                    isAntiAlias = false
-                    clearShadowLayer()
-                }
-                for (tickIndex in 0..11) {
-                    val tickRot = (tickIndex.toDouble() * Math.PI * 2.0 / 12).toFloat()
-                    val innerX = sin(tickRot.toDouble()).toFloat() * innerTickRadius
-                    val innerY = (-cos(tickRot.toDouble())).toFloat() * innerTickRadius
-                    val outerX = sin(tickRot.toDouble()).toFloat() * ambientCenterX
-                    val outerY = (-cos(tickRot.toDouble())).toFloat() * ambientCenterX
-                    drawLine(
-                            ambientCenterX + innerX, ambientCenterY + innerY,
-                            ambientCenterX + outerX, ambientCenterY + outerY, paint
-                    )
-                }
-            }
-            val bgIcon = Icon.createWithBitmap(bgBitmap)
-            val bgComponent = ImageComponent.Builder()
-                    .setComponentId(0)
-                    .setZOrder(0)
-                    .setImage(bgIcon)
-                    .build()
-
-            // Hour hand
-            val hourBitmap = Bitmap
-                    .createBitmap(CENTER_GAP_AND_CIRCLE_RADIUS.toInt(), ambientHeight / 2, Bitmap.Config.ARGB_8888)
-            Canvas(hourBitmap).apply {
-                val paint = Paint(mHourPaint).apply {
-                    isAntiAlias = false
-                    clearShadowLayer()
-                }
-                drawLine(
-                        width / 2f,
-                        height - CENTER_GAP_AND_CIRCLE_RADIUS,
-                        width / 2f,
-                        height - sHourHandLength,
-                        paint
-                )
-            }
-            var xOffset = ((hourBitmap.width + 3) / 2f) / ambientWidth
-            var yOffset = hourBitmap.height.toFloat() / ambientHeight
-            var offset = RectF(
-                    0.5f - xOffset,
-                    0.5f - yOffset,
-                    0.5f + xOffset,
-                    0.5f + yOffset
-            )
-            val hourComponent = ImageComponent.Builder(ImageComponent.Builder.HOUR_HAND)
-                    .setComponentId(1)
-                    .setZOrder(1)
-                    .setImage(Icon.createWithBitmap(hourBitmap))
-                    .setBounds(offset)
-                    .build()
-
-            // Minute hand
-            val minuteBitmap = Bitmap
-                    .createBitmap(CENTER_GAP_AND_CIRCLE_RADIUS.toInt(), ambientHeight / 2, Bitmap.Config.ARGB_8888)
-            Canvas(minuteBitmap).apply {
-                val paint = Paint(mMinutePaint).apply {
-                    isAntiAlias = false
-                    clearShadowLayer()
-                }
-                drawLine(
-                        width / 2f,
-                        height - CENTER_GAP_AND_CIRCLE_RADIUS,
-                        width / 2f,
-                        height - sMinuteHandLength,
-                        paint
-                )
-            }
-            xOffset = ((minuteBitmap.width + 3) / 2f) / ambientWidth
-            yOffset = minuteBitmap.height.toFloat() / ambientHeight
-            offset = RectF(
-                    0.5f - xOffset,
-                    0.5f - yOffset,
-                    0.5f + xOffset,
-                    0.5f + yOffset
-            )
-            val minuteComponent = ImageComponent.Builder(ImageComponent.Builder.MINUTE_HAND)
-                    .setComponentId(2)
-                    .setZOrder(2)
-                    .setImage(Icon.createWithBitmap(minuteBitmap))
-                    .setBounds(offset)
-                    .build()
-
-            // Second hand
-            val secondBitmap = Bitmap
-                    .createBitmap(CENTER_GAP_AND_CIRCLE_RADIUS.toInt(), ambientHeight / 2, Bitmap.Config.ARGB_8888)
-            Canvas(secondBitmap).apply {
-                val paint = Paint(mSecondPaint).apply {
-                    isAntiAlias = false
-                    clearShadowLayer()
-                }
-                drawLine(
-                        width / 2f,
-                        height - CENTER_GAP_AND_CIRCLE_RADIUS,
-                        width / 2f,
-                        height - mSecondHandLength,
-                        paint
-                )
-            }
-            xOffset = ((secondBitmap.width + 3) / 2f) / ambientWidth
-            yOffset = secondBitmap.height.toFloat() / ambientHeight
-            offset = RectF(
-                    0.5f - xOffset,
-                    0.5f - yOffset,
-                    0.5f + xOffset,
-                    0.5f + yOffset
-            )
-            val secondComponent = ImageComponent.Builder(ImageComponent.Builder.TICKING_SECOND_HAND)
-                    .setComponentId(3)
-                    .setZOrder(3)
-                    .setImage(Icon.createWithBitmap(secondBitmap))
-                    .setBounds(offset)
-                    .build()
-
-            // Center circle
-            val circleBitmap = Bitmap.createBitmap(
-                    CENTER_GAP_AND_CIRCLE_RADIUS.toInt() * 4,
-                    CENTER_GAP_AND_CIRCLE_RADIUS.toInt() * 4,
-                    Bitmap.Config.ARGB_8888
-            )
-            Canvas(circleBitmap).apply {
-                val paint = Paint(mTickAndCirclePaint).apply {
-                    isAntiAlias = false
-                    clearShadowLayer()
-                }
-                val innerPaint = Paint(paint).apply {
-                    color = Color.BLACK
-                    style = Paint.Style.FILL
-                }
-                translate(width / 2f, height / 2f)
-                drawCircle(0f, 0f, CENTER_GAP_AND_CIRCLE_RADIUS, innerPaint)
-                drawCircle(0f, 0f, CENTER_GAP_AND_CIRCLE_RADIUS, paint)
-            }
-            xOffset = circleBitmap.width / (ambientWidth * 2f)
-            yOffset = circleBitmap.height / (ambientHeight * 2f)
-            offset = RectF(
-                    0.5f - xOffset,
-                    0.5f - yOffset,
-                    0.5f + xOffset,
-                    0.5f + yOffset
-            )
-            val circleComponent = ImageComponent.Builder()
-                    .setComponentId(4)
-                    .setZOrder(4)
-                    .setImage(Icon.createWithBitmap(circleBitmap))
-                    .setBounds(offset)
-                    .build()
-
-            with(WatchFaceDecomposition.Builder()) {
-                addImageComponents(bgComponent, hourComponent, minuteComponent, secondComponent, circleComponent)
-                updateDecomposition(build())
-            }
         }
 
         override fun onDestroy() {
@@ -397,49 +455,6 @@ class MyWatchFace : CanvasWatchFaceService() {
             updateTimer()
         }
 
-        private fun updateWatchHandStyle() {
-            if (mAmbient) {
-                mHourPaint.color = Color.WHITE
-                mMinutePaint.color = Color.WHITE
-                mSecondPaint.color = Color.WHITE
-                mTickAndCirclePaint.color = Color.WHITE
-
-                mHourPaint.isAntiAlias = false
-                mMinutePaint.isAntiAlias = false
-                mSecondPaint.isAntiAlias = false
-                mTickAndCirclePaint.isAntiAlias = false
-
-                mHourPaint.clearShadowLayer()
-                mMinutePaint.clearShadowLayer()
-                mSecondPaint.clearShadowLayer()
-                mTickAndCirclePaint.clearShadowLayer()
-
-            } else {
-                mHourPaint.color = mWatchHandColor
-                mMinutePaint.color = mWatchHandColor
-                mSecondPaint.color = mWatchHandHighlightColor
-                mTickAndCirclePaint.color = mWatchHandColor
-
-                mHourPaint.isAntiAlias = true
-                mMinutePaint.isAntiAlias = true
-                mSecondPaint.isAntiAlias = true
-                mTickAndCirclePaint.isAntiAlias = true
-
-                mHourPaint.setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-                mMinutePaint.setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-                mSecondPaint.setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-                mTickAndCirclePaint.setShadowLayer(
-                    SHADOW_RADIUS, 0f, 0f, mWatchHandShadowColor
-                )
-            }
-        }
-
         override fun onInterruptionFilterChanged(interruptionFilter: Int) {
             super.onInterruptionFilterChanged(interruptionFilter)
             val inMuteMode = interruptionFilter == WatchFaceService.INTERRUPTION_FILTER_NONE
@@ -456,25 +471,6 @@ class MyWatchFace : CanvasWatchFaceService() {
 
         override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             super.onSurfaceChanged(holder, format, width, height)
-
-            /*
-             * Find the coordinates of the center point on the screen, and ignore the window
-             * insets, so that, on round watches with a "chin", the watch face is centered on the
-             * entire screen, not just the usable portion.
-             */
-            mWidth = width
-            mHeight = height
-            mCenterX = width / 2f
-            mCenterY = height / 2f
-
-            /*
-             * Calculate lengths of different hands based on watch screen size.
-             */
-            mSecondHandLength = (mCenterX * 0.875).toFloat()
-            sMinuteHandLength = (mCenterX * 0.75).toFloat()
-            sHourHandLength = (mCenterX * 0.5).toFloat()
-
-
             /* Scale loaded background image (more efficient) if surface dimensions change. */
             val scale = width.toFloat() / mBackgroundBitmap.width.toFloat()
 
@@ -497,8 +493,6 @@ class MyWatchFace : CanvasWatchFaceService() {
             if (!mBurnInProtection && !mLowBitAmbient) {
                 initGrayBackgroundBitmap()
             }
-
-            updateDecomposition()
         }
 
         private fun initGrayBackgroundBitmap() {
